@@ -45,6 +45,38 @@ app.add_middleware(
 )
 
 
+from fastapi import Request
+from fastapi.responses import JSONResponse
+import logging
+
+logger = logging.getLogger(__name__)
+
+@app.middleware("http")
+async def secure_database_string_middleware(request: Request, call_next):
+    response = await call_next(request)
+    
+    content_type = response.headers.get("content-type", "")
+    if "application/json" in content_type or "text/" in content_type:
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk
+        
+        # Re-create response body iterator so client can read it
+        async def iterator():
+            yield body
+        response.body_iterator = iterator()
+        
+        decoded_body = body.decode(errors="ignore")
+        if "postgresql://" in decoded_body or "postgres://" in decoded_body:
+            logger.error(f"BLOCKED RESPONSE: database connection string detected in response! Path: {request.url.path}")
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Security Exception: Sensitive connection parameters detected in response payload."}
+            )
+            
+    return response
+
+
 app.include_router(command_router, prefix="/api")
 app.include_router(category_router, prefix="/api")
 app.include_router(shop_category_router, prefix="/api")

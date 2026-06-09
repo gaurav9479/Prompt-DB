@@ -84,16 +84,25 @@ async def execute_command(
         except (ValueError, TypeError):
             ctx_shop_id = None
 
-    if ctx_shop_id is not None:
-        if isinstance(intent, ParsedIntent):
-            if intent.action in _SHOP_SCOPED_ACTIONS and "shop_id" not in (intent.parameters or {}):
-                intent.parameters = intent.parameters or {}
-                intent.parameters["shop_id"] = ctx_shop_id
-        elif isinstance(intent, MultiStepPlan):
-            for step in intent.steps:
-                if step.action in _SHOP_SCOPED_ACTIONS and "shop_id" not in (step.parameters or {}):
-                    step.parameters = step.parameters or {}
-                    step.parameters["shop_id"] = ctx_shop_id
+    if isinstance(intent, ParsedIntent):
+        intent.parameters = intent.parameters or {}
+        if ctx_shop_id is not None and intent.action in _SHOP_SCOPED_ACTIONS and "shop_id" not in intent.parameters:
+            intent.parameters["shop_id"] = ctx_shop_id
+        if intent.action in ["place_order", "list_my_orders"]:
+            if "customer_name" not in intent.parameters and context.get("customer_name"):
+                intent.parameters["customer_name"] = context.get("customer_name")
+            if "customer_email" not in intent.parameters and context.get("customer_email"):
+                intent.parameters["customer_email"] = context.get("customer_email")
+    elif isinstance(intent, MultiStepPlan):
+        for step in intent.steps:
+            step.parameters = step.parameters or {}
+            if ctx_shop_id is not None and step.action in _SHOP_SCOPED_ACTIONS and "shop_id" not in step.parameters:
+                step.parameters["shop_id"] = ctx_shop_id
+            if step.action in ["place_order", "list_my_orders"]:
+                if "customer_name" not in step.parameters and context.get("customer_name"):
+                    step.parameters["customer_name"] = context.get("customer_name")
+                if "customer_email" not in step.parameters and context.get("customer_email"):
+                    step.parameters["customer_email"] = context.get("customer_email")
 
     log = ActionLog(
         user_input=command.text,
