@@ -52,12 +52,14 @@ from datetime import datetime, timedelta
 
 async def list_orders(
     status: Optional[str] = None,
+    customer_email: Optional[str] = None,
+    shop_id: Optional[int] = None,
     skip: int = 0,
     limit: int = 100,
     db: AsyncSession = None
 ):
     service = OrderService(db)
-    return await service.get_all(status, skip, limit)
+    return await service.get_all(status, customer_email, shop_id, skip, limit)
 
 
 
