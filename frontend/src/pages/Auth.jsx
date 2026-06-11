@@ -17,7 +17,7 @@ const Auth = ({ user, setUser, addLog }) => {
     city: '', state: '', pincode: '', gst_number: '',
     company_code: ''
   })
-  const [role, setRole] = useState('customer') // 'customer', 'owner', 'employee'
+  const [role, setRole] = useState('customer') 
 
   const [registerLoading, setRegisterLoading] = useState(false)
   const [showLoginPassword, setShowLoginPassword] = useState(false)
@@ -73,7 +73,7 @@ const Auth = ({ user, setUser, addLog }) => {
     e.preventDefault()
     setLoginError('')
 
-    // Owner GST regex check
+
     if (role === 'owner') {
       const gstRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/
       if (!gstRegex.test(registerForm.gst_number.toUpperCase())) {
