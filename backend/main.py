@@ -18,10 +18,10 @@ async def lifespan(app: FastAPI):
             try:
                 await create_default_users(session)
             except Exception:
-                # DB may be unavailable; skip creating defaults but allow app to start
+
                 pass
     except Exception:
-        # session creation may fail if DB is down; ignore to allow app startup
+
         pass
 
     yield
@@ -61,7 +61,7 @@ async def secure_database_string_middleware(request: Request, call_next):
         async for chunk in response.body_iterator:
             body += chunk
         
-        # Re-create response body iterator so client can read it
+
         async def iterator():
             yield body
         response.body_iterator = iterator()

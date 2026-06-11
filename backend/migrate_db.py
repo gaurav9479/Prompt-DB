@@ -60,14 +60,14 @@ async def run_migration():
 
         for col_name, col_type in columns_to_add:
             try:
-                # PostgreSQL ALTER TABLE ADD COLUMN IF NOT EXISTS
+
                 query = f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
                 await session.execute(text(query))
                 print(f"  ✓ Column {col_name} checked/added")
             except Exception as e:
                 print(f"  ✗ Error adding column {col_name}: {e}")
 
-        # 2. Alter orders table to add admin_id
+
         print("Adding admin_id to orders table...")
         try:
             await session.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL"))
@@ -75,7 +75,7 @@ async def run_migration():
         except Exception as e:
             print(f"  ✗ Error adding admin_id to orders: {e}")
 
-        # 3. Create branches table if it does not exist
+
         print("Creating branches table...")
         create_branches_query = """
         CREATE TABLE IF NOT EXISTS branches (
