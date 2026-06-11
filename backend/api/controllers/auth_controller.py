@@ -28,7 +28,7 @@ async def login(data: UserLogin, db: AsyncSession = None):
 
 
 async def register(data: Any, db: AsyncSession = None):
-    # Fallback default register for customers
+
     service = UserService(db)
     existing = await service.get_by_email(data.email)
     if existing:
@@ -45,7 +45,7 @@ async def register_owner(data: OwnerRegister, db: AsyncSession = None):
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    # Generate unique company code
+
     company_code = f"SHOP-{secrets.token_hex(2).upper()}"
     while True:
         code_res = await db.execute(select(User).where(User.company_code == company_code))
@@ -53,7 +53,7 @@ async def register_owner(data: OwnerRegister, db: AsyncSession = None):
             break
         company_code = f"SHOP-{secrets.token_hex(2).upper()}"
 
-    # Create Super Admin Owner
+
     hashed_pwd = user_service._hash_password(data.password)
     user = User(
         email=data.email,
