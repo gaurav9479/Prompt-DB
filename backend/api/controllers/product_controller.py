@@ -1,37 +1,16 @@
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import APIRouter,  HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Dict, Any, List
 
-from backend.core.database import get_db
+
 from backend.core.websocket import manager
-from backend.schemas.command import CommandInput, CommandResponse, ParsedIntent, MultiStepPlan
+
 from backend.schemas.product import (
-    ProductCreate, ProductUpdate, ProductResponse,
-    CategoryCreate, CategoryUpdate, CategoryResponse
+    ProductCreate, ProductUpdate
+    
 )
-from backend.schemas.order import OrderCreate, OrderUpdate, OrderResponse
-from backend.schemas.customer import CustomerCreate, CustomerUpdate, CustomerResponse
-from backend.schemas.shop import (
-    ShopCreate, ShopUpdate, ShopResponse,
-    ShopCategoryCreate, ShopCategoryUpdate, ShopCategoryResponse
-)
-from backend.services.intent_parser import IntentParser
-from backend.services.action_executor import ActionExecutor
-from backend.services.product_service import ProductService, CategoryService
-from backend.services.order_service import OrderService
-from backend.services.customer_service import CustomerService
-from backend.services.analytics_service import AnalyticsService
-from backend.services.shop_service import ShopService, ShopCategoryService
-from backend.services.user_service import UserService
-from backend.schemas.user import (
-    UserCreate, UserUpdate, UserResponse, UserLogin, LoginResponse, ShopOwnerRegister,
-    ForgotPasswordRequest, ForgotPasswordResponse, VerifyResetTokenRequest,
-    VerifyResetTokenResponse, ResetPasswordRequest, ResetPasswordResponse
-)
-from backend.models.action_log import ActionLog
-from backend.models.customer import Customer
-from backend.models.product import Category
-from backend.models.user import UserRole
+from backend.services.product_service import ProductService
+
 from backend.services.command_suggestions import CommandSuggestionService
 
 router = APIRouter()
@@ -259,7 +238,7 @@ async def get_product(product_id: int, db: AsyncSession = None):
     product = await service.get_by_id(product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    # Increment view count, then re-fetch so Pydantic serializes a fully-loaded object
+
     await service.increment_view(product_id)
     product = await service.get_by_id(product_id)
     return product
@@ -274,10 +253,10 @@ async def create_product(data: ProductCreate, category_name: Optional[str] = Non
         if existing:
             raise HTTPException(status_code=400, detail="Product with this SKU already exists")
     
-    # Create product with auto-category support
+
     product = await service.create(data, category_name=category_name)
     
-    # Fetch complete product data with category
+
     full_product = await service.get_by_id(product.id)
     
     await manager.broadcast_update("product", "created", {
