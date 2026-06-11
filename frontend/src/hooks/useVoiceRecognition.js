@@ -7,7 +7,7 @@ export const useVoiceRecognition = () => {
   const [error, setError] = useState(null)
   const recognitionRef = useRef(null)
 
-  // Initialize speech recognition once
+
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 
@@ -20,10 +20,10 @@ export const useVoiceRecognition = () => {
     setIsSupported(true)
     const recognition = new SpeechRecognition()
 
-    // Configuration
-    recognition.continuous = false  // Stop after one result
+
+    recognition.continuous = false  
     recognition.interimResults = true
-    recognition.lang = 'en-IN'  // English-India (supports Hindi too)
+    recognition.lang = 'en-IN'  
 
     recognition.onstart = () => {
       console.log('🎤 Recognition started')
@@ -46,7 +46,7 @@ export const useVoiceRecognition = () => {
         }
       }
 
-      // Update transcript with whatever we have
+
       setTranscript(finalText || interimText)
       console.log('🎤 Transcript:', finalText || interimText)
     }
@@ -77,7 +77,7 @@ export const useVoiceRecognition = () => {
       return
     }
 
-    // Reset state
+
     setTranscript('')
     setError(null)
 
@@ -86,7 +86,7 @@ export const useVoiceRecognition = () => {
       console.log('🎤 Starting...')
     } catch (err) {
       console.error('🎤 Start failed:', err)
-      // Already started? Stop and restart
+
       if (err.name === 'InvalidStateError') {
         recognitionRef.current.stop()
       }
