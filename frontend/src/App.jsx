@@ -27,7 +27,7 @@ function App() {
       }
 
       try {
-        // Always fetch fresh user data from the server to avoid stale cache issues
+
         const res = await fetch(getApiUrl('api/auth/me'), {
           headers: { 'Authorization': `Bearer ${token}` }
         })
@@ -35,21 +35,21 @@ function App() {
         if (res.ok) {
           const freshUser = await res.json()
           setUser(freshUser)
-          // Update storage with fresh data
+
           if (localStorage.getItem('promptdb_token')) {
             localStorage.setItem('promptdb_user', JSON.stringify(freshUser))
           } else {
             sessionStorage.setItem('promptdb_user', JSON.stringify(freshUser))
           }
         } else {
-          // Token expired or invalid — clear everything
+
           localStorage.removeItem('promptdb_user')
           localStorage.removeItem('promptdb_token')
           sessionStorage.removeItem('promptdb_user')
           sessionStorage.removeItem('promptdb_token')
         }
       } catch (err) {
-        // Network error — fall back to cached user if available
+
         const savedUser = localStorage.getItem('promptdb_user') || sessionStorage.getItem('promptdb_user')
         if (savedUser) {
           try { setUser(JSON.parse(savedUser)) } catch (_) {}
@@ -71,7 +71,7 @@ function App() {
     addLog('Logged out', 'info')
   }
 
-  // Show a minimal loading screen while we verify the token
+
   if (authLoading) {
     return (
       <div style={{
@@ -97,7 +97,7 @@ function App() {
     )
   }
 
-  // Determine which dashboard to show based on role & profile status
+
   const getDashboardRoute = () => {
     if (!user) return <Navigate to="/auth" />
     if (!user.profile_complete) {
