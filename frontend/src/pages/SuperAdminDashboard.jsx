@@ -85,7 +85,7 @@ function SuperAdminDashboard({ user, setUser, logout }) {
   const [loadingShopDetail, setLoadingShopDetail] = useState(false)
 
 
-  const { isListening, voiceSupported, toggleListening } = useVoiceRecognition(setCommand)
+  const { isListening, voiceSupported, toggleListening, error: voiceError } = useVoiceRecognition(setCommand)
 
 
   const lastItemRef = useRef(null)
@@ -798,6 +798,7 @@ function SuperAdminDashboard({ user, setUser, logout }) {
               isSupported={voiceSupported}
               onClick={toggleListening}
               disabled={isProcessing}
+              error={voiceError}
             />
             <button type="submit" disabled={isProcessing || !command.trim()} className="command-btn">{isProcessing ? '...' : 'Go'}</button>
           </div>

@@ -778,6 +778,14 @@ body {
 }
 
 /* Voice Button */
+.voice-btn-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+}
+
 .voice-btn {
   position: relative;
   width: 44px;
@@ -807,6 +815,34 @@ body {
 .voice-btn.listening {
   background: var(--danger);
   animation: pulse-bg 1s ease-in-out infinite;
+}
+
+.voice-btn.error {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+}
+
+.voice-error-toast {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  background: rgba(30, 30, 30, 0.96);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  z-index: 999;
+  pointer-events: none;
+  animation: fadeInDown 0.2s ease;
+  max-width: 260px;
+  white-space: normal;
+  text-align: center;
+}
+
+@keyframes fadeInDown {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 .voice-icon {
