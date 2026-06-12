@@ -16,16 +16,16 @@ import {
 } from 'recharts'
 
 const ORANGE_COLORS = ['#f97316', '#ea580c', '#c2410c', '#9a3412', '#7c2d12', '#431407']
-const GUEST_COLOR = '#4b5563' // Gray for unregistered/guest
-const ACCENT_COLOR = '#f97316' // Orange primary
+const GUEST_COLOR = '#4b5563'
+const ACCENT_COLOR = '#f97316' 
 
 export default function AnalyticsView({ shopId, getApiUrl }) {
-  // Section 1: Live Metrics
+
   const [liveData, setLiveData] = useState(null)
   const [liveLoading, setLiveLoading] = useState(false)
   const [liveError, setLiveError] = useState(null)
 
-  // Section 2: Deep Insights States
+
   const [insights, setInsights] = useState({
     rfm: { data: null, loading: false, timestamp: null },
     demandForecast: { data: null, loading: false, timestamp: null },
@@ -37,10 +37,10 @@ export default function AnalyticsView({ shopId, getApiUrl }) {
     revenueForecast: { data: null, loading: false, timestamp: null }
   })
 
-  // Selected Insight to display in detail
+
   const [activeInsight, setActiveInsight] = useState(null)
 
-  // Fetch Section 1: Live Metrics
+
   const fetchLiveMetrics = async () => {
     setLiveLoading(true)
     setLiveError(null)
@@ -60,7 +60,8 @@ export default function AnalyticsView({ shopId, getApiUrl }) {
     }
   }
 
-  // Fetch Section 2: On-Demand Insights
+
+
   const runDeepInsight = async (key, apiPath) => {
     setInsights(prev => ({
       ...prev,
@@ -91,12 +92,12 @@ export default function AnalyticsView({ shopId, getApiUrl }) {
   useEffect(() => {
     fetchLiveMetrics()
     
-    // Auto-update live metrics every 5 minutes
+
     const interval = setInterval(fetchLiveMetrics, 300000)
     return () => clearInterval(interval)
   }, [shopId])
 
-  // Helpers to structure charts
+
   const getRegPieData = () => {
     if (!liveData || !liveData.customer_counts) return []
     const counts = liveData.customer_counts
@@ -124,7 +125,7 @@ export default function AnalyticsView({ shopId, getApiUrl }) {
         💡 <em>All insights are computed directly from your database using Python. No external services or APIs are used. Live metrics refresh automatically. Deep insights run only when you click — tap any card to compute.</em>
       </div>
 
-      {/* SECTION 1: LIVE METRICS */}
+
       <div style={{ marginBottom: '40px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <h2 style={{ fontSize: '22px', borderLeft: '4px solid #ea580c', paddingLeft: '12px', margin: 0 }}>
@@ -492,7 +493,7 @@ export default function AnalyticsView({ shopId, getApiUrl }) {
   )
 }
 
-// Sub-component: Card for On-Demand Actions
+
 function InsightActionCard({ title, description, insightKey, apiPath, state, onRun, isActive, onSelect }) {
   return (
     <div style={{
@@ -547,7 +548,7 @@ function InsightActionCard({ title, description, insightKey, apiPath, state, onR
   )
 }
 
-// 1. RFM Report Rendering
+
 function renderRFMReport(data) {
   const chartData = Object.entries(data.segments).map(([key, val]) => ({
     name: key,
@@ -609,7 +610,7 @@ function renderRFMReport(data) {
   )
 }
 
-// 2. Demand Forecast Report Rendering
+
 function renderDemandReport(data) {
   const chartData = [
     ...data.historical.map(h => ({ date: h.date, Revenue: h.revenue })),
@@ -641,7 +642,7 @@ function renderDemandReport(data) {
   )
 }
 
-// 3. Smart Reorder Queue Report Rendering
+
 function renderReorderReport(data) {
   return (
     <div>
@@ -691,7 +692,7 @@ function renderReorderReport(data) {
   )
 }
 
-// 4. Churn Risk Report Rendering
+
 function renderChurnReport(data) {
   return (
     <div>
@@ -737,7 +738,7 @@ function renderChurnReport(data) {
   )
 }
 
-// 5. Product Affinity Report Rendering
+
 function renderAffinityReport(data) {
   return (
     <div>
@@ -776,7 +777,7 @@ function renderAffinityReport(data) {
   )
 }
 
-// 6. LTV Report Rendering
+
 function renderLTVReport(data) {
   return (
     <div>
@@ -811,12 +812,12 @@ function renderLTVReport(data) {
   )
 }
 
-// 7. Hourly Heatmap Report Rendering
+
 function renderHeatmapReport(data) {
   const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
   const hours = Array.from({ length: 24 }, (_, i) => i)
 
-  // Find max count to scale opacity/shading
+
   const maxCount = Math.max(...data.map(d => d.count), 1)
 
   return (
@@ -869,7 +870,7 @@ function renderHeatmapReport(data) {
   )
 }
 
-// 8. Revenue Forecast Report Rendering
+
 function renderRevenueForecastReport(data) {
   const chartData = [
     ...data.historical.map(h => ({ date: h.date, Actual: h.revenue, Smooth: h.rolling_avg })),
