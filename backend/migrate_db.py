@@ -3,8 +3,14 @@ import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy import text
 from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
+
+backend_env = Path(__file__).resolve().parent / '.env'
+if backend_env.exists():
+    load_dotenv(dotenv_path=backend_env)
+else:
+    load_dotenv()
 
 async def run_migration():
     db_url = os.getenv("DATABASE_URL")
