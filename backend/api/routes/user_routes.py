@@ -1,18 +1,9 @@
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional, Dict, Any, List
+from typing import Optional, List
 
 from backend.core.database import get_db
-
-from backend.services.command_suggestions import CommandSuggestionService
-
-router = APIRouter()
-command_suggestion_service = CommandSuggestionService()
-
-
-session_context: Dict[str, Any] = {}
-
-
+from backend.schemas.user import UserResponse, UserCreate, UserUpdate
 from backend.api.controllers import user_controller
 
 router = APIRouter()
