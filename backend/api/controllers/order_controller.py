@@ -1,0 +1,87 @@
+from fastapi import APIRouter, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional, Dict, Any, List
+
+
+from backend.core.websocket import manager
+
+from backend.schemas.order import OrderCreate, OrderUpdate, OrderResponse
+
+
+
+from backend.services.order_service import OrderService
+
+from backend.services.command_suggestions import CommandSuggestionService
+
+router = APIRouter()
+command_suggestion_service = CommandSuggestionService()
+
+
+session_context: Dict[str, Any] = {}
+
+
+
+
+
+
+
+async def list_orders(
+    status: Optional[str] = None,
+    customer_email: Optional[str] = None,
+    shop_id: Optional[int] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: AsyncSession = None
+):
+    service = OrderService(db)
+    return await service.get_all(status, customer_email, shop_id, skip, limit)
+
+
+
+async def get_order(order_id: int, db: AsyncSession = None):
+    service = OrderService(db)
+    order = await service.get_by_id(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return order
+
+
+
+async def create_order(data: OrderCreate, db: AsyncSession = None):
+    service = OrderService(db)
+
+    order = await service.create(data)
+    if not order:
+        raise HTTPException(status_code=400, detail="Failed to create order. Product may not exist or be out of stock.")
+
+    await manager.broadcast_update("order", "created", {
+        "id": order.id, "status": order.status, "total": order.total_amount
+    })
+    return order
+
+
+
+async def update_order(order_id: int, data: OrderUpdate, db: AsyncSession = None):
+    service = OrderService(db)
+    order = await service.update(order_id, data)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    await manager.broadcast_update("order", "updated", {
+        "id": order.id, "status": order.status, "total": order.total_amount
+    })
+    return order
+
+
+
+async def cancel_order(order_id: int, db: AsyncSession = None):
+    service = OrderService(db)
+    order = await service.cancel(order_id)
+    if not order:
+        raise HTTPException(status_code=400, detail="Cannot cancel order")
+    await manager.broadcast_update("order", "cancelled", {"id": order.id, "status": order.status})
+    return order
+
+
+
+
+

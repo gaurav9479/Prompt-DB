@@ -16,7 +16,7 @@ def ensure_project_root_on_path() -> None:
 
 
 def _uvicorn_target() -> str:
-    # Always use the package-qualified import for the app.
+
     return "backend.main:app"
 
 

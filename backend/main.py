@@ -18,10 +18,10 @@ async def lifespan(app: FastAPI):
             try:
                 await create_default_users(session)
             except Exception:
-                # DB may be unavailable; skip creating defaults but allow app to start
+
                 pass
     except Exception:
-        # session creation may fail if DB is down; ignore to allow app startup
+
         pass
 
     yield
@@ -43,6 +43,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+import logging
+
+logger = logging.getLogger(__name__)
+
+@app.middleware("http")
+async def secure_database_string_middleware(request: Request, call_next):
+    response = await call_next(request)
+    
+    content_type = response.headers.get("content-type", "")
+    if "application/json" in content_type or "text/" in content_type:
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk
+        
+
+        async def iterator():
+            yield body
+        response.body_iterator = iterator()
+        
+        decoded_body = body.decode(errors="ignore")
+        if "postgresql://" in decoded_body or "postgres://" in decoded_body:
+            logger.error(f"BLOCKED RESPONSE: database connection string detected in response! Path: {request.url.path}")
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Security Exception: Sensitive connection parameters detected in response payload."}
+            )
+            
+    return response
 
 
 app.include_router(command_router, prefix="/api")

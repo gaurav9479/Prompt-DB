@@ -5,33 +5,15 @@ from typing import Optional, Dict, Any, List
 from backend.core.database import get_db
 from backend.core.websocket import manager
 from backend.schemas.command import CommandInput, CommandResponse, ParsedIntent, MultiStepPlan
-from backend.schemas.product import (
-    ProductCreate, ProductUpdate, ProductResponse,
-    CategoryCreate, CategoryUpdate, CategoryResponse
-)
+
 from backend.schemas.order import OrderCreate, OrderUpdate, OrderResponse
 from backend.schemas.customer import CustomerCreate, CustomerUpdate, CustomerResponse
-from backend.schemas.shop import (
-    ShopCreate, ShopUpdate, ShopResponse,
-    ShopCategoryCreate, ShopCategoryUpdate, ShopCategoryResponse
-)
+
 from backend.services.intent_parser import IntentParser
 from backend.services.action_executor import ActionExecutor
-from backend.services.product_service import ProductService, CategoryService
-from backend.services.order_service import OrderService
-from backend.services.customer_service import CustomerService
-from backend.services.analytics_service import AnalyticsService
-from backend.services.shop_service import ShopService, ShopCategoryService
-from backend.services.user_service import UserService
-from backend.schemas.user import (
-    UserCreate, UserUpdate, UserResponse, UserLogin, LoginResponse, ShopOwnerRegister,
-    ForgotPasswordRequest, ForgotPasswordResponse, VerifyResetTokenRequest,
-    VerifyResetTokenResponse, ResetPasswordRequest, ResetPasswordResponse
-)
+
 from backend.models.action_log import ActionLog
-from backend.models.customer import Customer
-from backend.models.product import Category
-from backend.models.user import UserRole
+
 from backend.services.command_suggestions import CommandSuggestionService
 
 router = APIRouter()
@@ -44,11 +26,9 @@ session_context: Dict[str, Any] = {}
 
 
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select
 from backend.models.shop import Shop
-from backend.models.order import Order
-from backend.models.product import Product
-from datetime import datetime, timedelta
+
 
 async def execute_command(
     command: CommandInput,
@@ -60,8 +40,7 @@ async def execute_command(
     context = {**session_context, **(command.context or {})}
     intent = await parser.parse(command.text, context)
 
-    # Safety net: inject shop_id from context into parameters if the action needs it
-    # but Gemini forgot to include it
+
     _SHOP_SCOPED_ACTIONS = {
         "create_product", "update_product", "list_products",
         "get_low_stock", "restock_product", "set_product_price",
@@ -84,16 +63,25 @@ async def execute_command(
         except (ValueError, TypeError):
             ctx_shop_id = None
 
-    if ctx_shop_id is not None:
-        if isinstance(intent, ParsedIntent):
-            if intent.action in _SHOP_SCOPED_ACTIONS and "shop_id" not in (intent.parameters or {}):
-                intent.parameters = intent.parameters or {}
-                intent.parameters["shop_id"] = ctx_shop_id
-        elif isinstance(intent, MultiStepPlan):
-            for step in intent.steps:
-                if step.action in _SHOP_SCOPED_ACTIONS and "shop_id" not in (step.parameters or {}):
-                    step.parameters = step.parameters or {}
-                    step.parameters["shop_id"] = ctx_shop_id
+    if isinstance(intent, ParsedIntent):
+        intent.parameters = intent.parameters or {}
+        if ctx_shop_id is not None and intent.action in _SHOP_SCOPED_ACTIONS and "shop_id" not in intent.parameters:
+            intent.parameters["shop_id"] = ctx_shop_id
+        if intent.action in ["place_order", "list_my_orders"]:
+            if "customer_name" not in intent.parameters and context.get("customer_name"):
+                intent.parameters["customer_name"] = context.get("customer_name")
+            if "customer_email" not in intent.parameters and context.get("customer_email"):
+                intent.parameters["customer_email"] = context.get("customer_email")
+    elif isinstance(intent, MultiStepPlan):
+        for step in intent.steps:
+            step.parameters = step.parameters or {}
+            if ctx_shop_id is not None and step.action in _SHOP_SCOPED_ACTIONS and "shop_id" not in step.parameters:
+                step.parameters["shop_id"] = ctx_shop_id
+            if step.action in ["place_order", "list_my_orders"]:
+                if "customer_name" not in step.parameters and context.get("customer_name"):
+                    step.parameters["customer_name"] = context.get("customer_name")
+                if "customer_email" not in step.parameters and context.get("customer_email"):
+                    step.parameters["customer_email"] = context.get("customer_email")
 
     log = ActionLog(
         user_input=command.text,
@@ -182,7 +170,7 @@ async def execute_command(
 
 
 
-# Map action name -> (entity, operation) for broadcast_update
+
 _ACTION_ENTITY_MAP = {
     "create_product":          ("product", "created"),
     "update_product":          ("product", "updated"),
