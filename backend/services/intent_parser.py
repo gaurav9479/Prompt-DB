@@ -508,9 +508,13 @@ class IntentParser:
     ]
 
     def __init__(self):
-        # Groq (primary)
-        from groq import AsyncGroq
-        self._groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY) if settings.GROQ_API_KEY else None
+        # Groq (primary) - import optionally to avoid hard crash if package is missing
+        try:
+            from groq import AsyncGroq  # type: ignore
+        except Exception:
+            AsyncGroq = None  # type: ignore
+
+        self._groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY) if (AsyncGroq and settings.GROQ_API_KEY) else None
         self._groq_index = 0
         # Gemini (backup)
         genai.configure(api_key=settings.GEMINI_API_KEY)
