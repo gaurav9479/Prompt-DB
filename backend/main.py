@@ -36,12 +36,20 @@ app = FastAPI(
 
 
 cors_origins = settings.CORS_ORIGINS if settings.CORS_ORIGINS else ["*"]
+if "*" not in cors_origins:
+    cors_origins = [
+        origin.strip()
+        for origin in cors_origins
+        if origin and origin.strip()
+    ] + ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173", "http://127.0.0.1:5173"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
@@ -51,9 +59,26 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _add_cors_headers(response: JSONResponse, request: Request) -> JSONResponse:
+    origin = request.headers.get("origin")
+    if not origin:
+        return response
+
+    allowed_origins = {item.strip() for item in settings.CORS_ORIGINS if item and item.strip()}
+    if "*" in allowed_origins or origin in allowed_origins or origin.startswith("http://localhost") or origin.startswith("http://127.0.0.1"):
+        response.headers["access-control-allow-origin"] = origin
+        response.headers["access-control-allow-credentials"] = "true"
+        response.headers["vary"] = "Origin"
+        response.headers["access-control-allow-methods"] = "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT"
+        response.headers["access-control-allow-headers"] = request.headers.get("access-control-request-headers", "content-type, authorization")
+    return response
+
+
 @app.middleware("http")
 async def secure_database_string_middleware(request: Request, call_next):
     response = await call_next(request)
+    response = _add_cors_headers(response, request)
     
     content_type = response.headers.get("content-type", "")
     if "application/json" in content_type or "text/" in content_type:
@@ -69,10 +94,11 @@ async def secure_database_string_middleware(request: Request, call_next):
         decoded_body = body.decode(errors="ignore")
         if "postgresql://" in decoded_body or "postgres://" in decoded_body:
             logger.error(f"BLOCKED RESPONSE: database connection string detected in response! Path: {request.url.path}")
-            return JSONResponse(
+            error_response = JSONResponse(
                 status_code=500,
                 content={"detail": "Security Exception: Sensitive connection parameters detected in response payload."}
             )
+            return _add_cors_headers(error_response, request)
             
     return response
 

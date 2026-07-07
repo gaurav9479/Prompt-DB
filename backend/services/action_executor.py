@@ -1,3 +1,4 @@
+import re
 import uuid
 from typing import Dict, Any, Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -586,36 +587,65 @@ class ActionExecutor:
 
     async def _restock_product(self, params: Dict[str, Any]) -> CommandResponse:
         product_id = params.get("product_id")
-        quantity = params.get("quantity")
-        if not product_id:
+        product_name = params.get("name")
+
+        if not product_id and not product_name:
             return CommandResponse(
                 success=False,
                 action="restock_product",
-                message="Product ID is required",
-            )
-        if not quantity or quantity <= 0:
-            return CommandResponse(
-                success=False,
-                action="restock_product",
-                message="Quantity must be a positive number",
+                message="Product ID or name is required",
             )
 
-        product = await self.product_service.get_by_id(product_id)
+        quantity = params.get("quantity")
+        try:
+            quantity = int(quantity)
+        except (TypeError, ValueError):
+            return CommandResponse(
+                success=False,
+                action="restock_product",
+                message="Quantity must be a valid number",
+            )
+
+        if quantity == 0:
+            return CommandResponse(
+                success=False,
+                action="restock_product",
+                message="Quantity must be non-zero",
+            )
+
+        product = None
+        if product_id:
+            product = await self.product_service.get_by_id(product_id)
+        elif product_name:
+            product_name = str(product_name).strip().lower()
+            product_name = re.sub(r'\b(?:stock|quantity|qty|मात्रा|स्टॉक|to|from|in|mein|ko|ka|ki|se|of|for|the|add|karo|do|badhao|badh(?:ao|a|o|i|e)|jodo|jodna|bharo)\b$', '', product_name, flags=re.IGNORECASE)
+            product_name = re.sub(r'\s+', ' ', product_name).strip()
+            product = await self.product_service.get_by_name(product_name)
+            if not product:
+                search_results = await self.product_service.search(product_name, limit=5)
+                if search_results:
+                    product = search_results[0]
+
         if not product:
             return CommandResponse(
                 success=False,
                 action="restock_product",
-                message=f"Product {product_id} not found",
+                message=f"Product {product_name or product_id} not found",
             )
 
-        await self.product_service.update_stock(product_id, quantity)
-        updated_product = await self.product_service.get_by_id(product_id)
+        await self.product_service.update_stock(product.id, quantity)
+        updated_product = await self.product_service.get_by_id(product.id)
+
+        if quantity > 0:
+            message = f"Added {quantity} units to '{product.name}'. New stock: {updated_product.quantity}"
+        else:
+            message = f"Reduced '{product.name}' stock by {abs(quantity)} units. New stock: {updated_product.quantity}"
 
         return CommandResponse(
             success=True,
             action="restock_product",
-            message=f"Added {quantity} units to '{product.name}'. New stock: {updated_product.quantity}",
-            data={"id": product_id, "name": product.name, "quantity": updated_product.quantity},
+            message=message,
+            data={"id": product.id, "name": product.name, "quantity": updated_product.quantity},
         )
 
     async def _set_product_price(self, params: Dict[str, Any]) -> CommandResponse:
@@ -1588,6 +1618,12 @@ class ActionExecutor:
                 action="sell_at_price",
                 message="Product ID or Product Name is required to process the sale",
             )
+
+        if not selling_price:
+            product = await self.product_service.get_by_id(product_id)
+            if product and getattr(product, "price", None) is not None:
+                selling_price = product.price
+
         if not selling_price:
             return CommandResponse(
                 success=False,

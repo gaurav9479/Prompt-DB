@@ -391,6 +391,9 @@ class FallbackParser:
     @classmethod
     def _parse_sell_at_price(cls, text: str) -> Optional[Dict[str, Any]]:
         """Extract sell_at_price parameters locally"""
+        if not re.search(r'\b(?:sell|sold|becho|बेचो|bech(?:o|na)?|becho\s+at|sell\s+at|sold\s+at)\b', text, re.IGNORECASE):
+            return None
+
         price = cls._extract_number(r'\b(?:for|price|कीमत|दाम|at|@)\b[:\s]+([\d,\.]+)', text)
         if not price:
             price = cls._extract_number(r'\b(?:for|at|@)\b\s+([\d,\.]+)', text)
@@ -493,7 +496,7 @@ class FallbackParser:
         return None
 
 
-class IntentParser:
+class IntentParser(FallbackParser):
     # Groq models — 14,400 req/day, 6000 RPM free (10x better than Gemini)
     _GROQ_MODELS = [
         "llama-3.3-70b-versatile",   # best quality, 6000 RPM
@@ -508,17 +511,18 @@ class IntentParser:
     ]
 
     def __init__(self):
-        # Groq (primary) - import optionally to avoid hard crash if package is missing
+        # Agentic mode: Groq is the primary and only required LLM backend.
         try:
             from groq import AsyncGroq  # type: ignore
-        except Exception:
+        except Exception as exc:
+            logger.warning(f"Groq SDK unavailable: {exc}")
             AsyncGroq = None  # type: ignore
 
         self._groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY) if (AsyncGroq and settings.GROQ_API_KEY) else None
         self._groq_index = 0
-        # Gemini (backup)
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        self._gemini_index = 0
+
+        if not self._groq_client:
+            logger.warning("Groq client is not configured; agentic intent parsing will fail fast.")
 
         self.system_prompt = """You are an intent parser for a command execution system.
 Your job is to parse natural language commands into structured JSON actions.
@@ -688,6 +692,69 @@ Output format for multi-step:
         )
         return resp.text
 
+    @staticmethod
+    def _parse_stock_adjustment(user_input: str) -> Optional[Dict[str, Any]]:
+        """Parse stock adjustment commands like 'reduce stock' or 'add 50 samosa to stock'."""
+        text = (user_input or "").strip()
+        if not text:
+            return None
+
+        lower = text.lower()
+        if not re.search(r'\b(?:stock|quantity|qty|स्टॉक|मात्रा)\b', lower):
+            return None
+
+        decrease_keywords = re.compile(r'\b(?:reduce|decrease|deduct|remove|cut|lower|कम|घटाओ|घटा|ghatao|ghata|kam|minus|hatao)\b', re.IGNORECASE)
+        increase_keywords = re.compile(r'\b(?:add|increase|boost|restock|replenish|बढ़ाओ|जोड़ो|बढ़ा|जोड़ना|भरो|badh(?:ao|a|o|i|e)|karo|kar|do|de|bharo|jodo|jodna)\b', re.IGNORECASE)
+
+        if decrease_keywords.search(lower):
+            qty_match = re.search(r'(?:by|to|=)\s*(-?\d+)\b', text, re.IGNORECASE)
+            if not qty_match:
+                qty_match = re.search(r'\b(-?\d+)\b', text)
+            if not qty_match:
+                return None
+
+            quantity = int(qty_match.group(1))
+            if quantity == 0:
+                return None
+
+            name = text
+            name = re.sub(r'\b(?:reduce|decrease|deduct|remove|cut|lower|कम|घटाओ|घटा|ghatao|ghata|kam|minus|hatao)\b', ' ', name, flags=re.IGNORECASE)
+            name = re.sub(r'\b(?:by|to|=)\b\s*-?\d+\b', ' ', name, flags=re.IGNORECASE)
+            name = re.sub(r'\b(?:stock|quantity|qty|स्टॉक|मात्रा|mai|toh|hai|hey|please|plz|mein|ko|ka|ki|se|me|of|for|the|to|into|in|from|karo|kar|do|de|badh(?:ao|a|o|i|e)|jodo|jodna|bharo)\b', ' ', name, flags=re.IGNORECASE)
+            name = re.sub(r'\b-?\d+\b', ' ', name)
+            name = re.sub(r'\s+', ' ', name).strip(' .,-')
+            name = name.strip().lower()
+            if not name:
+                return None
+
+            return {"name": name, "quantity": -abs(quantity)}
+
+        if increase_keywords.search(lower):
+            qty_match = re.search(r'(?:by|to|=)\s*(\d+)\b', text, re.IGNORECASE)
+            if not qty_match:
+                qty_match = re.search(r'\b(\d+)\b', text)
+            if not qty_match:
+                return None
+
+            quantity = int(qty_match.group(1))
+            if quantity <= 0:
+                return None
+
+            name = text
+            name = re.sub(r'\b(?:add|increase|boost|restock|replenish|बढ़ाओ|जोड़ो|बढ़ा|जोड़ना|भरो|badh(?:ao|a|o|i|e)|karo|kar|do|de|bharo|jodo|jodna)\b', ' ', name, flags=re.IGNORECASE)
+            name = re.sub(r'\b(?:by|to|=)\b\s*\d+\b', ' ', name, flags=re.IGNORECASE)
+            name = re.sub(r'\b(?:stock|quantity|qty|स्टॉक|मात्रा|mai|toh|hai|hey|please|plz|mein|ko|ka|ki|se|me|of|for|the|to|into|in|from)\b', ' ', name, flags=re.IGNORECASE)
+            name = re.sub(r'\b\d+\b', ' ', name)
+            name = re.sub(r'\s+', ' ', name).strip(' .,-')
+            name = name.strip().lower()
+
+            if not name:
+                return None
+
+            return {"name": name, "quantity": quantity}
+
+        return None
+
     async def parse(
         self, user_input: str, context: Optional[Dict[str, Any]] = None
     ) -> Union[ParsedIntent, MultiStepPlan]:
@@ -695,63 +762,60 @@ Output format for multi-step:
         if context:
             context_str = f"\n\nContext: {json.dumps(context)}"
 
+        stock_adjustment = self._parse_stock_adjustment(user_input)
+        if stock_adjustment:
+            return ParsedIntent(
+                action="restock_product",
+                entity="product",
+                parameters=stock_adjustment,
+                requires_confirmation=False,
+            )
+
+        sell_params = self._parse_sell_at_price(user_input)
+        if sell_params:
+            return ParsedIntent(
+                action="sell_at_price",
+                entity="product",
+                parameters=sell_params,
+                requires_confirmation=False,
+            )
+
         prompt = f"""{self.system_prompt}{context_str}\n\nUser command: {user_input}\n\nJSON output:"""
 
 
-        fallback_result = FallbackParser.parse(user_input)
-        if fallback_result:
-            fallback_result.parameters = fallback_result.parameters or {}
-            fallback_result.parameters['_fallback'] = True
-            return fallback_result
-
         last_error = ""
 
+        if not self._groq_client:
+            return ParsedIntent(
+                action="error",
+                entity=None,
+                parameters={"error": "Groq client is not configured. Agentic intent parsing cannot continue."},
+            )
 
-        if self._groq_client:
-            for model_name in self._GROQ_MODELS:
-                try:
-                    raw = await self._call_groq(prompt, model_name)
-                    return self._parse_json_response(raw)
-                except asyncio.TimeoutError:
-                    logger.warning(f"Groq timeout on {model_name}, trying next.")
-                    continue
-                except json.JSONDecodeError:
-                    logger.warning(f"Groq bad JSON from {model_name}, trying next.")
-                    continue
-                except Exception as e:
-                    err = str(e)
-                    last_error = err
-                    is_quota = "429" in err or "rate_limit" in err.lower() or "quota" in err.lower()
-                    if is_quota:
-                        logger.warning(f"Groq quota on {model_name}, trying next Groq model.")
-                        continue
-                    logger.warning(f"Groq error on {model_name}: {err[:100]}")
-                    break 
-
-
-        for model_name in self._GEMINI_MODELS:
+        for model_name in self._GROQ_MODELS:
             try:
-                raw = await self._call_gemini(prompt, model_name)
+                raw = await self._call_groq(prompt, model_name)
                 return self._parse_json_response(raw)
             except asyncio.TimeoutError:
-                logger.warning(f"Gemini timeout on {model_name}, trying next.")
+                logger.warning(f"Groq timeout on {model_name}, trying next.")
                 continue
             except json.JSONDecodeError:
+                logger.warning(f"Groq bad JSON from {model_name}, trying next.")
                 continue
             except Exception as e:
                 err = str(e)
                 last_error = err
-                is_quota = "429" in err or "quota" in err.lower() or "RESOURCE_EXHAUSTED" in err
+                is_quota = "429" in err or "rate_limit" in err.lower() or "quota" in err.lower()
                 if is_quota:
-                    logger.warning(f"Gemini quota on {model_name}, trying next.")
+                    logger.warning(f"Groq quota on {model_name}, trying next Groq model.")
                     continue
+                logger.warning(f"Groq error on {model_name}: {err[:100]}")
                 break
-
 
         return ParsedIntent(
             action="error",
             entity=None,
-            parameters={"error": f"Intent parsing failed: {last_error}"},
+            parameters={"error": f"Groq intent parsing failed: {last_error}"},
         )
 
 
