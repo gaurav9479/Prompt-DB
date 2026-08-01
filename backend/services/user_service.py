@@ -31,6 +31,7 @@ class UserService:
             phone=data.phone,
             role=data.role,
             shop_id=data.shop_id,
+            profile_complete=(data.role == UserRole.CUSTOMER.value)
         )
         self.db.add(user)
         await self.db.commit()

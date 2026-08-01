@@ -1,18 +1,15 @@
-from fastapi import APIRouter
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from typing import Optional, Dict, Any, List
-
-
-from backend.services.command_suggestions import CommandSuggestionService
-
-router = APIRouter()
-command_suggestion_service = CommandSuggestionService()
-
-
-session_context: Dict[str, Any] = {}
-
-
-async def health_check():
-    return {"status": "healthy", "service": "Prompt-DB"}
-
-
+async def health_check(db: AsyncSession):
+    db_status = "healthy"
+    try:
+        await db.execute(text("SELECT 1"))
+    except Exception as e:
+        db_status = f"unhealthy: {str(e)}"
+        
+    return {
+        "status": "healthy",
+        "service": "Prompt-DB",
+        "database": db_status
+    }
