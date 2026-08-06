@@ -2,7 +2,6 @@ import json
 import re
 import asyncio
 import logging
-import google.generativeai as genai
 from typing import Dict, Any, Optional, List, Union
 
 from langchain_core.prompts import ChatPromptTemplate
