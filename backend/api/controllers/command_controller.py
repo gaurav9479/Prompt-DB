@@ -36,11 +36,36 @@ async def execute_command(
     db: AsyncSession = None
 ):
     try:
-        parser = IntentParser()
-        executor = ActionExecutor(db)
         context = {**session_context, **(command.context or {})}
-        intent = await parser.parse(command.text, context)
+        confirmed = command.context.get("confirmed", False) if command.context else False
 
+        # 1. Build initial state for LangGraph workflow
+        initial_state = {
+            "user_input": command.text,
+            "context": {**context, "db_session": db},
+            "parsed_intent": None,
+            "execution_result": None,
+            "requires_confirmation": False,
+            "confirmed": confirmed,
+            "error": None
+        }
+
+        # 2. Invoke compiled LangGraph
+        from backend.services.agent_graph import app_agent_graph
+        final_state = await app_agent_graph.ainvoke(initial_state)
+
+        # 3. Handle parser or graph errors
+        if final_state.get("error"):
+            return CommandResponse(
+                success=False,
+                action="error",
+                message=final_state["error"]
+            )
+
+        parsed_intent_data = final_state["parsed_intent"]
+        execution_result_data = final_state["execution_result"]
+
+        # Context updates for shop actions mapping (shop scoping)
         _SHOP_SCOPED_ACTIONS = {
             "create_product", "update_product", "list_products",
             "get_low_stock", "restock_product", "set_product_price",
@@ -63,61 +88,53 @@ async def execute_command(
             except (ValueError, TypeError):
                 ctx_shop_id = None
 
-        if isinstance(intent, ParsedIntent):
-            intent.parameters = intent.parameters or {}
-            if ctx_shop_id is not None and intent.action in _SHOP_SCOPED_ACTIONS and "shop_id" not in intent.parameters:
-                intent.parameters["shop_id"] = ctx_shop_id
-            if intent.action in ["place_order", "list_my_orders"]:
-                if "customer_name" not in intent.parameters and context.get("customer_name"):
-                    intent.parameters["customer_name"] = context.get("customer_name")
-                if "customer_email" not in intent.parameters and context.get("customer_email"):
-                    intent.parameters["customer_email"] = context.get("customer_email")
-        elif isinstance(intent, MultiStepPlan):
-            for step in intent.steps:
-                step.parameters = step.parameters or {}
-                if ctx_shop_id is not None and step.action in _SHOP_SCOPED_ACTIONS and "shop_id" not in step.parameters:
-                    step.parameters["shop_id"] = ctx_shop_id
-                if step.action in ["place_order", "list_my_orders"]:
-                    if "customer_name" not in step.parameters and context.get("customer_name"):
-                        step.parameters["customer_name"] = context.get("customer_name")
-                    if "customer_email" not in step.parameters and context.get("customer_email"):
-                        step.parameters["customer_email"] = context.get("customer_email")
+        if parsed_intent_data:
+            if parsed_intent_data.get("is_plan"):
+                for step in parsed_intent_data["steps"]:
+                    step["parameters"] = step.get("parameters") or {}
+                    if ctx_shop_id is not None and step["action"] in _SHOP_SCOPED_ACTIONS and "shop_id" not in step["parameters"]:
+                        step["parameters"]["shop_id"] = ctx_shop_id
+            else:
+                parsed_intent_data["parameters"] = parsed_intent_data.get("parameters") or {}
+                if ctx_shop_id is not None and parsed_intent_data["action"] in _SHOP_SCOPED_ACTIONS and "shop_id" not in parsed_intent_data["parameters"]:
+                    parsed_intent_data["parameters"]["shop_id"] = ctx_shop_id
 
+        # 4. Log intent in ActionLog
         log = ActionLog(
             user_input=command.text,
-            parsed_intent=intent.model_dump() if isinstance(intent, ParsedIntent) else {"steps": [s.model_dump() for s in intent.steps]},
+            parsed_intent=parsed_intent_data,
             user_id=user_id,
             shop_id=ctx_shop_id,
         )
         db.add(log)
 
-        if isinstance(intent, MultiStepPlan):
-            results = await executor.execute_plan(intent)
-            log.action_taken = "multi_step_plan"
-            log.status = "completed" if all(r.success for r in results) else "partial"
-            log.result = [r.model_dump() for r in results]
+        # 5. Check for Human-In-The-Loop Confirmation
+        if final_state["requires_confirmation"] and not final_state["confirmed"]:
+            import uuid
+            confirmation_id = str(uuid.uuid4())
+            action = parsed_intent_data.get("action", "unknown") if parsed_intent_data else "unknown"
+            msg = parsed_intent_data.get("confirmation_message") if parsed_intent_data else None
+            msg = msg or f"Are you sure you want to {action}?"
             
-            if results and all(r.success for r in results):
-                log.user_message = "Multi-step plan completed successfully"
-                log.shopkeeper_message = "Multi-step plan executed successfully"
-            else:
-                log.user_message = "Multi-step plan failed or completed partially"
-                log.shopkeeper_message = "Multi-step plan failed or completed partially"
-                
+            log.action_taken = action
+            log.status = "pending_confirmation"
             await db.commit()
-            for result in results:
-                await manager.broadcast_action(result.action, result.success, result.data, result.message)
-                if result.success:
-                    entity, operation = _get_entity_operation(result.action)
-                    if entity:
-                        await manager.broadcast_update(entity, operation, result.data)
-            return results[-1] if results else CommandResponse(success=False, action="error", message="No actions executed")
-        else:
-            result = await executor.execute(intent)
-            log.action_taken = intent.action
+            
+            return CommandResponse(
+                success=False,
+                action=action,
+                message=msg,
+                requires_confirmation=True,
+                confirmation_id=confirmation_id
+            )
+
+        # 6. Process action execution results
+        if execution_result_data:
+            result = CommandResponse(**execution_result_data)
+            log.action_taken = result.action
             log.status = "completed" if result.success else "failed"
             log.result = result.model_dump()
-            
+
             if result.success and isinstance(result.data, dict):
                 res_shop_id = result.data.get("shop_id")
                 if res_shop_id:
@@ -127,7 +144,7 @@ async def execute_command(
                         pass
 
             if result.success:
-                if intent.action == "place_order" and isinstance(result.data, dict):
+                if result.action == "place_order" and isinstance(result.data, dict):
                     qty = result.data.get("quantity", 1)
                     prod_name = result.data.get("product") or "item"
                     shop_name = "the shop"
@@ -137,43 +154,53 @@ async def execute_command(
                         if shop_name_val:
                             shop_name = shop_name_val
                     
-                    customer_name = intent.parameters.get("customer_name") or "Customer"
+                    customer_name = context.get("customer_name") or "Customer"
                     if user_id:
                         log.user_message = f"You bought {qty}x {prod_name} from {shop_name}"
                         log.shopkeeper_message = f"You sold {qty}x {prod_name} to {customer_name} (Registered)"
                     else:
                         log.user_message = None
                         log.shopkeeper_message = f"You sold {qty}x {prod_name} to {customer_name} (Unregistered Guest)"
-                elif intent.action == "create_product" and isinstance(result.data, dict):
+                elif result.action == "create_product" and isinstance(result.data, dict):
                     prod_name = result.data.get("name") or "product"
-                    sku = intent.parameters.get("sku") or "N/A"
+                    sku = result.data.get("sku") or "N/A"
                     log.user_message = None
                     log.shopkeeper_message = f"You added product '{prod_name}' (SKU: {sku})"
                 else:
-                    log.user_message = f"Action '{intent.action}' completed successfully"
-                    log.shopkeeper_message = f"Action '{intent.action}' executed successfully"
+                    log.user_message = f"Action '{result.action}' completed successfully"
+                    log.shopkeeper_message = f"Action '{result.action}' executed successfully"
             else:
-                log.user_message = f"Failed to execute '{intent.action}': {result.message}"
-                log.shopkeeper_message = f"Failed to execute '{intent.action}': {result.message}"
+                log.user_message = f"Failed to execute '{result.action}': {result.message}"
+                log.shopkeeper_message = f"Failed to execute '{result.action}': {result.message}"
 
             await db.commit()
-            if result.success and result.data and "id" in result.data:
+            if result.success and result.data and isinstance(result.data, dict) and "id" in result.data:
                 session_context["last_entity_id"] = result.data["id"]
-                session_context["last_entity_type"] = intent.entity
+                if parsed_intent_data and not parsed_intent_data.get("is_plan"):
+                    session_context["last_entity_type"] = parsed_intent_data.get("entity")
+
+            # Broadcast changes to websockets clients
             await manager.broadcast_action(result.action, result.success, result.data, result.message)
             if result.success:
-                entity, operation = _get_entity_operation(intent.action)
+                entity, operation = _get_entity_operation(result.action)
                 if entity:
                     await manager.broadcast_update(entity, operation, result.data)
             return result
+        else:
+            return CommandResponse(
+                success=False,
+                action="error",
+                message="Workflow did not produce execution results."
+            )
     except Exception as exc:
-        logger.exception("Command execution failed")
+        logger.exception("Command execution failed in LangGraph workflow")
         if db is not None:
             try:
                 await db.rollback()
             except Exception:
                 pass
         return CommandResponse(success=False, action="error", message=f"Command failed: {exc}")
+
 
 
 

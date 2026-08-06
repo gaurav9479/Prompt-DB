@@ -7,32 +7,35 @@ from backend.services.intent_parser import IntentParser
 class IntentParserTests(unittest.IsolatedAsyncioTestCase):
     async def test_parse_uses_groq_before_fallback(self):
         parser = IntentParser.__new__(IntentParser)
-        parser._groq_client = object()
-        parser._groq_index = 0
         parser.system_prompt = "test prompt"
-        parser._GROQ_MODELS = ["test-model"]
+        parser.structured_llm = object()  # dummy to pass configuration check
 
-        parser._call_groq = AsyncMock(
-            return_value='{"action": "create_product", "entity": "product", "parameters": {"name": "Test Product", "price": 100}, "requires_confirmation": false}'
+        from backend.services.intent_parser import ExecutionOutputSchema, ParsedIntentSchema
+        mock_result = ExecutionOutputSchema(
+            single_action=ParsedIntentSchema(
+                action="create_product",
+                entity="product",
+                parameters={"name": "Test Product", "price": 100},
+                requires_confirmation=False
+            )
         )
+
+        parser._call_llm_chain = AsyncMock(return_value=mock_result)
 
         result = await parser.parse("add product test price 100", {})
 
         self.assertEqual(result.action, "create_product")
         self.assertEqual(result.parameters["name"], "Test Product")
-        parser._call_groq.assert_awaited_once()
+        parser._call_llm_chain.assert_awaited_once()
 
     async def test_parse_returns_error_when_groq_is_unavailable(self):
         parser = IntentParser.__new__(IntentParser)
-        parser._groq_client = None
-        parser._groq_index = 0
-        parser.system_prompt = "test prompt"
-        parser._GROQ_MODELS = ["test-model"]
+        parser.structured_llm = None
 
         result = await parser.parse("add product test price 100", {})
 
         self.assertEqual(result.action, "error")
-        self.assertIn("Groq", result.parameters["error"])
+        self.assertIn("LLM client is not configured", result.parameters["error"])
 
     async def test_parse_reduces_stock_via_keyword_rules(self):
         parser = IntentParser.__new__(IntentParser)

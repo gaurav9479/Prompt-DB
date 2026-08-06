@@ -5,6 +5,11 @@ import logging
 import google.generativeai as genai
 from typing import Dict, Any, Optional, List, Union
 
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_groq import ChatGroq
+from langchain_google_genai import ChatGoogleGenerativeAI
+from pydantic import BaseModel, Field
+
 from backend.core.config import settings
 from backend.schemas.command import ParsedIntent, MultiStepPlan
 
@@ -449,7 +454,6 @@ class FallbackParser:
                         if extracted:
                             parameters = extracted
                         else:
-                            # Can't extract enough detail locally — skip fallback
                             continue
 
                     elif action == 'place_order':
@@ -495,35 +499,63 @@ class FallbackParser:
 
         return None
 
+class ParsedIntentSchema(BaseModel):
+    action: str = Field(description="The action name, e.g. 'create_product', 'update_product', 'list_orders', etc.")
+    entity: Optional[str] = Field(None, description="The entity acted on, e.g. 'product', 'order', 'shop', etc.")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="Extracted parameters for the action")
+    requires_confirmation: bool = Field(default=False, description="Whether this action requires user confirmation")
+    confirmation_message: Optional[str] = Field(None, description="Optional custom message to show user for confirmation")
+
+class ExecutionOutputSchema(BaseModel):
+    steps: Optional[List[ParsedIntentSchema]] = Field(None, description="List of steps if this is a multi-step plan")
+    single_action: Optional[ParsedIntentSchema] = Field(None, description="Single action if not a multi-step plan")
 
 class IntentParser(FallbackParser):
-    # Groq models — 14,400 req/day, 6000 RPM free (10x better than Gemini)
-    _GROQ_MODELS = [
-        "llama-3.3-70b-versatile",   # best quality, 6000 RPM
-        "llama-3.1-8b-instant",      # fastest, 30,000 RPM
-        "mixtral-8x7b-32768",        # good quality, 5000 RPM
-    ]
-    # Gemini models — fallback only
-    _GEMINI_MODELS = [
-        "gemini-2.0-flash-lite",
-        "gemini-1.5-flash-8b",
-        "gemini-1.5-flash",
-    ]
-
     def __init__(self):
-        # Agentic mode: Groq is the primary and only required LLM backend.
-        try:
-            from groq import AsyncGroq  # type: ignore
-        except Exception as exc:
-            logger.warning(f"Groq SDK unavailable: {exc}")
-            AsyncGroq = None  # type: ignore
+        self.llm = None
+        self.structured_llm = None
+        
+        # Initialize Groq using LangChain
+        groq_llm = None
+        if settings.GROQ_API_KEY:
+            try:
+                groq_llm = ChatGroq(
+                    model_name="llama-3.3-70b-versatile",
+                    api_key=settings.GROQ_API_KEY,
+                    temperature=0,
+                    timeout=8.0
+                )
+            except Exception as e:
+                logger.warning(f"LangChain ChatGroq initialization failed: {e}")
+                
+        # Initialize Gemini fallback using LangChain
+        gemini_llm = None
+        if settings.GEMINI_API_KEY:
+            try:
+                gemini_llm = ChatGoogleGenerativeAI(
+                    model="gemini-1.5-flash",
+                    google_api_key=settings.GEMINI_API_KEY,
+                    temperature=0,
+                    timeout=8.0
+                )
+            except Exception as e:
+                logger.warning(f"LangChain ChatGoogleGenerativeAI initialization failed: {e}")
+                
+        # Configure fallback chain
+        if groq_llm and gemini_llm:
+            self.llm = groq_llm.with_fallbacks([gemini_llm])
+        elif groq_llm:
+            self.llm = groq_llm
+        elif gemini_llm:
+            self.llm = gemini_llm
+            
+        if self.llm:
+            try:
+                self.structured_llm = self.llm.with_structured_output(ExecutionOutputSchema)
+            except Exception as e:
+                logger.warning(f"Structured output binding failed: {e}")
 
-        self._groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY) if (AsyncGroq and settings.GROQ_API_KEY) else None
-        self._groq_index = 0
-
-        if not self._groq_client:
-            logger.warning("Groq client is not configured; agentic intent parsing will fail fast.")
-
+        # The system prompt describing how the LLM should translate user text to schemas.
         self.system_prompt = """You are an intent parser for a command execution system.
 Your job is to parse natural language commands into structured JSON actions.
 You understand both English and Hindi (including Hinglish - mixed Hindi-English).
@@ -538,7 +570,6 @@ Available actions:
 
 === PRODUCT COMMANDS (Shop Admin only) ===
 - create_product: Create a new product (params: name, price, shop_id?, cost_price?, description?, quantity?, brand?, sku?, barcode?, category_id?, category?(name string), tags?, unit?, min_stock_level?, is_featured?, is_perishable?)
-
 - update_product: Update a product (params: product_id, name?, price?, quantity?, description?, brand?, sku?)
 - delete_product: Delete a product (params: product_id)
 - list_products: List all products (params: shop_id?, category_id?, search?)
@@ -598,162 +629,30 @@ Available actions:
 
 === BILLING & PROFIT COMMANDS (Shop Admin) ===
 - sell_at_price: Sell product at bargained price (params: product_id, price/selling_price, quantity?, customer_name?, customer_phone?)
-- generate_bill: Generate bill for order (params: order_id, bill_type: "customer"|"admin")
-- get_daily_profit: Get daily profit report (params: shop_id, date?)
-- get_product_profit: Get profit report by product (params: shop_id)
-- get_profit_summary: Get overall profit summary (params: shop_id)
+- generate_bill: Generate bill for an order (params: order_id, bill_type?)
+- get_daily_profit: Get daily profit reports (params: shop_id?, date?)
+- get_product_profit: Get profit stats grouped by products (params: shop_id?)
+- get_profit_summary: Get total profit summary (params: shop_id?)
 
 Rules:
-1. Output ONLY valid JSON, no markdown or explanation
-2. For destructive actions (delete, cancel, suspend), set requires_confirmation: true
-3. When user says "add shop", "create shop", "register shop" -> use prefill_shop_form (NOT create_shop)
-4. When user says "approve" or "verify" a shop -> use verify_shop
-5. When user says "pending shops" -> use get_pending_shops
-6. When user says "show my orders", "my orders" -> use list_my_orders
-7. When user says "buy", "order", "purchase" a product -> use place_order
-8. When user says "show dashboard", "my stats" -> use get_shop_dashboard
-9. When user says "platform stats" -> use get_platform_stats
-10. When user says "sell at", "sell for", "sold at" -> use sell_at_price
-11. When user says "generate bill", "make bill", "print bill" -> use generate_bill
-12. When user says "today's profit", "daily profit", "profit report" -> use get_daily_profit
-13. When user says "product profit", "profit by product" -> use get_product_profit
-14. When user says "profit summary", "my profit", "show profit" -> use get_profit_summary
-15. For admin bill (with profit info), set bill_type: "admin". For customer bill, set bill_type: "customer"
-16. IMPORTANT: If context contains a "shop_id" value, always include it in the parameters for create_product, update_product, list_products, get_low_stock, and any shop-specific commands.
-
-
-Hindi/Hinglish Command Patterns (treat same as English equivalents):
-- "प्रोडक्ट जोड़ो/बनाओ" or "product add karo/banao" -> create_product
-- "प्रोडक्ट दिखाओ/लिस्ट करो" or "products dikhao/list karo" -> list_products
-- "प्रोडक्ट अपडेट करो/बदलो" or "product update karo/badlo" -> update_product
-- "प्रोडक्ट हटाओ/डिलीट करो" or "product hatao/delete karo" -> delete_product
-- "स्टॉक बढ़ाओ/जोड़ो" or "stock badhao/add karo" -> restock_product
-- "कम स्टॉक दिखाओ" or "low stock dikhao/batao" -> get_low_stock
-- "ऑर्डर दिखाओ" or "orders dikhao/list karo" -> list_orders
-- "ऑर्डर कन्फर्म करो" or "order confirm karo" -> confirm_order
-- "ऑर्डर भेजो/शिप करो" or "order ship karo/bhejo" -> ship_order
-- "ऑर्डर डिलीवर करो" or "order deliver karo" -> deliver_order
-- "ऑर्डर कैंसल करो" or "order cancel karo" -> cancel_order
-- "दुकान जोड़ो/बनाओ" or "shop add karo/banao/register karo" -> prefill_shop_form
-- "दुकान वेरिफाई करो" or "shop verify karo/approve karo" -> verify_shop
-- "पेंडिंग दुकानें दिखाओ" or "pending shops dikhao" -> get_pending_shops
-- "मेरे ऑर्डर दिखाओ" or "mere orders dikhao" -> list_my_orders
-- "खरीदना है/ऑर्डर करना है" or "kharidna hai/order karna hai" -> place_order
-- "डैशबोर्ड दिखाओ" or "dashboard dikhao" -> get_shop_dashboard
-- "प्लेटफॉर्म स्टैट्स" or "platform stats dikhao" -> get_platform_stats
-- "इस दाम पर बेचो" or "is price pe becho/sell karo" -> sell_at_price
-- "बिल बनाओ" or "bill banao/generate karo" -> generate_bill
-- "आज का प्रॉफिट" or "aaj ka profit/daily profit" -> get_daily_profit
-- "प्रॉफिट दिखाओ" or "profit dikhao/batao" -> get_profit_summary
-- "ग्राहक दिखाओ" or "customers dikhao" -> list_customers
-- "सर्च करो" or "search karo/dhundho" -> search_products
-
-Output format for single action:
-{"action": "action_name", "entity": "product|order|shop|user|category", "parameters": {...}, "requires_confirmation": false}
-
-Output format for multi-step:
-{"steps": [{"action": "...", "entity": "...", "parameters": {...}}, ...]}
+1. Always parse numbers to integer/float params (e.g. price: 100.0, quantity: 50).
+2. If the user mentions a product/shop/customer name, extract it and set it in name/query.
+3. Hindi equivalents: "मुनाफा" -> profit, "ग्राहक" -> customer, "बेचो" -> sell, "कन्फर्म" -> confirm.
+4. When user says "profit summary", use get_profit_summary.
+5. If context contains "shop_id", always include it in parameters for shop-specific commands.
 """
 
-    def _parse_json_response(self, text: str) -> Union[ParsedIntent, MultiStepPlan]:
-        """Parse raw LLM response text into ParsedIntent or MultiStepPlan."""
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-            text = text.strip()
-        parsed = json.loads(text)
-        if "steps" in parsed:
-            steps = [ParsedIntent(**step) for step in parsed["steps"]]
-            return MultiStepPlan(steps=steps)
-        return ParsedIntent(**parsed)
-
-    async def _call_groq(self, prompt: str, model: str) -> str:
-        """Call Groq API with 8s timeout. Returns raw text."""
-        resp = await asyncio.wait_for(
-            self._groq_client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                max_tokens=512,
-            ),
-            timeout=8.0
-        )
-        return resp.choices[0].message.content
-
-    async def _call_gemini(self, prompt: str, model_name: str) -> str:
-        """Call Gemini API via run_in_executor with 8s timeout. Returns raw text."""
-        model = genai.GenerativeModel(model_name)
-        loop = asyncio.get_event_loop()
-        resp = await asyncio.wait_for(
-            loop.run_in_executor(None, lambda: model.generate_content(prompt)),
-            timeout=8.0
-        )
-        return resp.text
-
-    @staticmethod
-    def _parse_stock_adjustment(user_input: str) -> Optional[Dict[str, Any]]:
-        """Parse stock adjustment commands like 'reduce stock' or 'add 50 samosa to stock'."""
-        text = (user_input or "").strip()
-        if not text:
-            return None
-
-        lower = text.lower()
-        if not re.search(r'\b(?:stock|quantity|qty|स्टॉक|मात्रा)\b', lower):
-            return None
-
-        decrease_keywords = re.compile(r'\b(?:reduce|decrease|deduct|remove|cut|lower|कम|घटाओ|घटा|ghatao|ghata|kam|minus|hatao)\b', re.IGNORECASE)
-        increase_keywords = re.compile(r'\b(?:add|increase|boost|restock|replenish|बढ़ाओ|जोड़ो|बढ़ा|जोड़ना|भरो|badh(?:ao|a|o|i|e)|karo|kar|do|de|bharo|jodo|jodna)\b', re.IGNORECASE)
-
-        if decrease_keywords.search(lower):
-            qty_match = re.search(r'(?:by|to|=)\s*(-?\d+)\b', text, re.IGNORECASE)
-            if not qty_match:
-                qty_match = re.search(r'\b(-?\d+)\b', text)
-            if not qty_match:
-                return None
-
-            quantity = int(qty_match.group(1))
-            if quantity == 0:
-                return None
-
-            name = text
-            name = re.sub(r'\b(?:reduce|decrease|deduct|remove|cut|lower|कम|घटाओ|घटा|ghatao|ghata|kam|minus|hatao)\b', ' ', name, flags=re.IGNORECASE)
-            name = re.sub(r'\b(?:by|to|=)\b\s*-?\d+\b', ' ', name, flags=re.IGNORECASE)
-            name = re.sub(r'\b(?:stock|quantity|qty|स्टॉक|मात्रा|mai|toh|hai|hey|please|plz|mein|ko|ka|ki|se|me|of|for|the|to|into|in|from|karo|kar|do|de|badh(?:ao|a|o|i|e)|jodo|jodna|bharo)\b', ' ', name, flags=re.IGNORECASE)
-            name = re.sub(r'\b-?\d+\b', ' ', name)
-            name = re.sub(r'\s+', ' ', name).strip(' .,-')
-            name = name.strip().lower()
-            if not name:
-                return None
-
-            return {"name": name, "quantity": -abs(quantity)}
-
-        if increase_keywords.search(lower):
-            qty_match = re.search(r'(?:by|to|=)\s*(\d+)\b', text, re.IGNORECASE)
-            if not qty_match:
-                qty_match = re.search(r'\b(\d+)\b', text)
-            if not qty_match:
-                return None
-
-            quantity = int(qty_match.group(1))
-            if quantity <= 0:
-                return None
-
-            name = text
-            name = re.sub(r'\b(?:add|increase|boost|restock|replenish|बढ़ाओ|जोड़ो|बढ़ा|जोड़ना|भरो|badh(?:ao|a|o|i|e)|karo|kar|do|de|bharo|jodo|jodna)\b', ' ', name, flags=re.IGNORECASE)
-            name = re.sub(r'\b(?:by|to|=)\b\s*\d+\b', ' ', name, flags=re.IGNORECASE)
-            name = re.sub(r'\b(?:stock|quantity|qty|स्टॉक|मात्रा|mai|toh|hai|hey|please|plz|mein|ko|ka|ki|se|me|of|for|the|to|into|in|from)\b', ' ', name, flags=re.IGNORECASE)
-            name = re.sub(r'\b\d+\b', ' ', name)
-            name = re.sub(r'\s+', ' ', name).strip(' .,-')
-            name = name.strip().lower()
-
-            if not name:
-                return None
-
-            return {"name": name, "quantity": quantity}
-
-        return None
+    async def _call_llm_chain(self, user_input: str, context_str: str) -> ExecutionOutputSchema:
+        """Call the LangChain runnable chain to fetch structured output."""
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", self.system_prompt),
+            ("human", "User command: {user_input}\nContext: {context_str}")
+        ])
+        chain = prompt | self.structured_llm
+        return await chain.ainvoke({
+            "user_input": user_input,
+            "context_str": context_str
+        })
 
     async def parse(
         self, user_input: str, context: Optional[Dict[str, Any]] = None
@@ -762,6 +661,7 @@ Output format for multi-step:
         if context:
             context_str = f"\n\nContext: {json.dumps(context)}"
 
+        # 1. Local regex fallbacks first (fast path)
         stock_adjustment = self._parse_stock_adjustment(user_input)
         if stock_adjustment:
             return ParsedIntent(
@@ -780,44 +680,49 @@ Output format for multi-step:
                 requires_confirmation=False,
             )
 
-        prompt = f"""{self.system_prompt}{context_str}\n\nUser command: {user_input}\n\nJSON output:"""
-
-
-        last_error = ""
-
-        if not self._groq_client:
+        if not self.structured_llm:
             return ParsedIntent(
                 action="error",
                 entity=None,
-                parameters={"error": "Groq client is not configured. Agentic intent parsing cannot continue."},
+                parameters={"error": "LLM client is not configured. Agentic intent parsing failed."},
             )
 
-        for model_name in self._GROQ_MODELS:
-            try:
-                raw = await self._call_groq(prompt, model_name)
-                return self._parse_json_response(raw)
-            except asyncio.TimeoutError:
-                logger.warning(f"Groq timeout on {model_name}, trying next.")
-                continue
-            except json.JSONDecodeError:
-                logger.warning(f"Groq bad JSON from {model_name}, trying next.")
-                continue
-            except Exception as e:
-                err = str(e)
-                last_error = err
-                is_quota = "429" in err or "rate_limit" in err.lower() or "quota" in err.lower()
-                if is_quota:
-                    logger.warning(f"Groq quota on {model_name}, trying next Groq model.")
-                    continue
-                logger.warning(f"Groq error on {model_name}: {err[:100]}")
-                break
+        try:
+            # 2. Invoke structured LLM chain
+            result = await self._call_llm_chain(user_input, context_str)
+            
+            # 3. Map result back to ParsedIntent or MultiStepPlan
+            if result.steps:
+                steps = [
+                    ParsedIntent(
+                        action=s.action,
+                        entity=s.entity,
+                        parameters=s.parameters,
+                        requires_confirmation=s.requires_confirmation,
+                        confirmation_message=s.confirmation_message
+                    )
+                    for s in result.steps
+                ]
+                return MultiStepPlan(steps=steps)
+            elif result.single_action:
+                s = result.single_action
+                return ParsedIntent(
+                    action=s.action,
+                    entity=s.entity,
+                    parameters=s.parameters,
+                    requires_confirmation=s.requires_confirmation,
+                    confirmation_message=s.confirmation_message
+                )
+            
+            raise ValueError("Empty structured response from LangChain")
 
-        return ParsedIntent(
-            action="error",
-            entity=None,
-            parameters={"error": f"Groq intent parsing failed: {last_error}"},
-        )
-
+        except Exception as e:
+            logger.error(f"LangChain structured output failure: {e}")
+            return ParsedIntent(
+                action="error",
+                entity=None,
+                parameters={"error": f"LangChain intent parsing failed: {str(e)}"},
+            )
 
     async def parse_with_retry(
         self,
@@ -825,7 +730,6 @@ Output format for multi-step:
         context: Optional[Dict[str, Any]] = None,
         missing_params: Optional[List[str]] = None,
     ) -> ParsedIntent:
-
         retry_prompt = user_input
         if missing_params:
             retry_prompt = f"{user_input}\n\n[System: Previous attempt was missing: {', '.join(missing_params)}. Please ask the user for these values.]"
@@ -837,3 +741,4 @@ Output format for multi-step:
                 action="error", parameters={"error": "Empty plan"}
             )
         return result
+
